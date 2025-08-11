@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Suite17</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Suite17">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0f172a">
+  <style>
+    :root{
+      --bg:#0f172a; --card:#111827; --line:#1f2937; --ink:#f8fafc; --dim:#cbd5e1;
+      --pri:#06b6d4; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444;
+    }
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    .wrap{max-width:980px;margin:0 auto;padding:16px}
+    .header{border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between}
+    .title{font-weight:800;font-size:22px}
+    .subtitle{color:var(--dim)}
+    .btn{background:var(--pri);color:white;border:0;border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer}
+    .btn.warn{background:var(--warn)} .btn.err{background:var(--err)} .btn:disabled{opacity:.6;cursor:not-allowed}
+    .row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px;margin-bottom:12px}
+    input,textarea{width:100%;background:#0b1220;border:1px solid var(--line);border-radius:12px;padding:10px;color:var(--ink)}
+    .toggle{width:48px;height:30px;border-radius:16px;display:flex;align-items:center;padding:4px;background:#334155;cursor:pointer}
+    .toggle.on{background:var(--ok)} .dot{width:22px;height:22px;border-radius:11px;background:#fff;transform:translateX(0);transition:.15s} .toggle.on .dot{transform:translateX(18px)}
+    .pill{padding:8px;border-radius:10px;background:#334155;color:#d1d5db;cursor:pointer} .pill.sel{background:var(--pri);color:#fff}
+    .grid{display:grid;grid-template-columns:1fr;gap:12px} @media(min-width:760px){.grid3{grid-template-columns:repeat(3,1fr)} .grid2{grid-template-columns:repeat(2,1fr)}}
+    .tests{font-size:12px;color:var(--dim)}
+    a.link{color:#67e8f9}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- Preact + HTM (no Babel needed) -->
+<script src="https://unpkg.com/preact@10.20.2/dist/preact.umd.js" crossorigin></script>
+<script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js" crossorigin></script>
+
+<script>
+const { h, render } = preact;
+const html = htm.bind(h);
+const { useState, useMemo } = preactHooks ?? preact; // preact.umd includes hooks via preact
+
+// Fallback if hooks are not global (older UMDs). Ensure useState/useMemo exist.
+const useStateHook = preact.useState || ((v)=>[v, ()=>{}]);
+const useMemoHook = preact.useMemo || ((fn)=>fn());
+
+// Helpers
+const DAY_USE_PRICE = 120;
+function uuidv4(){
+  try{
+    const g = (window.crypto||{});
+    if(g.getRandomValues){
+      const b = new Uint8Array(16); g.getRandomValues(b);
+      b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+      const hex = Array.from(b, x=>x.toString(16).padStart(2,'0')).join('');
+      return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+    }
+  }catch(e){}
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random()*16|0, v = c === 'x' ? r : (r&0x3|0x8); return v.toString(16);
+  });
+}
+function computePrice({nights, dayUse, specialPeriod}){
+  if(dayUse) return DAY_USE_PRICE;
+  const first = specialPeriod ? 170 : 150;
+  const add   = specialPeriod ? 85  : 75;
+  const n = Math.max(1, parseInt(nights||1,10));
+  return first + add * (n-1);
+}
+function suggestedDeposit(nights){
+  const n = Math.max(1, parseInt(nights||1,10));
+  if (n===1) return {amount:100, perNight:[100], bossRequired:false};
+  if (n===2) return {amount:100, perNight:[50,50], bossRequired:false};
+  return {amount:0, perNight:[], bossRequired:true};
+}
+function estimateHVAC(checkIn){
+  if(!checkIn) return '';
+  try{
+    const [d,t] = checkIn.split(' ');
+    const [Y,M,D] = d.split('-').map(x=>parseInt(x,10));
+    const [h,m] = t.split(':').map(x=>parseInt(x,10));
+    const dt = new Date(Y, (M-1), D, h, m||0);
+    dt.setHours(dt.getHours()-2);
+    const pad = x=> String(x).padStart(2,'0');
+    return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+  }catch{ return ''; }
+}
+
+const Toggle = ({value,onChange}) => html`<div class=${"toggle "+(value?'on':'')} onClick=${()=>onChange(!value)}><div class="dot"></div></div>`;
+const Field = ({label, value, onChange, type='text', placeholder}) => html`
+  <div>
+    <div class="tests" style=${{marginBottom:'4px'}}>${label}</div>
+    <input type=${type} value=${value} onInput=${(e)=>onChange(e.target.value)} placeholder=${placeholder}/>
+  </div>`;
+
+function emptyBooking(){
+  return {
+    id: uuidv4(), guestName:'', phone:'', source:'Direct',
+    specialPeriod:false, dayUse:false,
+    checkIn:'', checkOut:'', nights:1,
+    docsReceived:false, calendarUpdated:false, ownerNotified:false, bookingPulseClosed:false,
+    deposit:{ required:false, method:'Cash', amount:0, received:false, bossApproved:false },
+    balance:{ method:'Cash', dueAtCheckIn:true, received:false },
+    paymentNotes:'',
+    hvacAuto:false, hvacWhen:'',
+    tasks:{ askDocs:false,tell24hMsg:false,sendDocsToGroup:false,saveContact:false,nameMatchesCalendar:false,askCheckInTime:false,sendAccessInfo:false,beAvailableMsg:false,checkBalanceWithOwner:false },
+    price:0, notes:''
+  };
+}
+
+function App(){
+  const [bookings, setBookings] = useState([]);
+  const [view, setView] = useState('list');
+  const [current, setCurrent] = useState(emptyBooking());
+
+  const push = (b)=> setBookings(prev=> [b, ...prev]);
+  const remove = (id)=> setBookings(prev=> prev.filter(x=> x.id!==id));
+
+  const saveCurrent = ()=>{
+    if(!current.guestName || !current.checkIn){ alert('Nome ospite e Check-in sono obbligatori.'); return; }
+    if(current.source==='Direct' && current.deposit.required){
+      const s = suggestedDeposit(current.nights);
+      if(s.bossRequired && !current.deposit.bossApproved){
+        alert('Prenotazioni dirette >2 notti: serve approvazione Boss per acconto.'); return;
+      }
+    }
+    push({...current, price: computePrice(current)});
+    setView('list');
+  };
+
+  const tests = useMemo(()=>{
+    const arr = [
+      {name:'Prezzo 1 notte', g: computePrice({nights:1, dayUse:false, specialPeriod:false}), e:150},
+      {name:'Prezzo 2 notti', g: computePrice({nights:2, dayUse:false, specialPeriod:false}), e:225},
+      {name:'Prezzo 3 notti speciale', g: computePrice({nights:3, dayUse:false, specialPeriod:true}), e:340},
+      {name:'Day Use', g: computePrice({nights:1, dayUse:true, specialPeriod:false}), e:120},
+      {name:'HVAC', g: estimateHVAC('2025-08-15 15:00'), e:'2025-08-15 13:00'},
+    ];
+    return arr.map(t=> ({...t, pass: String(t.g)===String(t.e)}));
+  }, []);
+
+  return html`
+    <div class="wrap">
+      <div class="header">
+        <div>
+          <div class="title">Suite17</div>
+          <div class="subtitle">Gestisci prenotazioni e checklist</div>
+        </div>
+        <div style=${{display:'flex', gap:'8px'}}>
+          <button class="btn" onClick=${()=>{ setCurrent(emptyBooking()); setView('edit'); }}>Nuova prenotazione</button>
+          <button class="btn warn" onClick=${()=> alert(JSON.stringify(bookings,null,2).slice(0,1000))}>Esporta JSON</button>
+        </div>
+      </div>
+
+      ${view==='list' && html`
+        <div>
+          ${!bookings.length && html`<div class="card subtitle" style=${{textAlign:'center'}}>Nessuna prenotazione. Crea la prima con "Nuova prenotazione".</div>`}
+          ${bookings.map(item => html`
+            <div class="card" key=${item.id}>
+              <div class="row">
+                <div>
+                  <div style=${{fontWeight:700}}>${item.guestName} • ${item.source}</div>
+                  <div class="subtitle" style=${{fontSize:'12px'}}>${(item.checkIn||'').slice(0,16)} → ${(item.checkOut||'').slice(0,16) || '—'}</div>
+                  <div class="subtitle" style=${{fontSize:'12px'}}>€ ${item.price} ${item.dayUse?'(Day Use)':''} ${item.specialPeriod?'• Speciale':''}</div>
+                </div>
+                <div style=${{display:'flex',gap:'8px'}}>
+                  <button class="btn" onClick=${()=>{ setCurrent(item); setView('detail'); }}>Apri</button>
+                  <button class="btn err" onClick=${()=> remove(item.id)}>Elimina</button>
+                </div>
+              </div>
+            </div>
+          `)}
+
+          <div class="card">
+            <div style=${{fontWeight:700, marginBottom:'6px'}}>Self-tests</div>
+            ${tests.map((t,i)=> html`
+              <div class="row tests" key=${i}>
+                <div>${t.name}</div>
+                <div style=${{color: t.pass?'#22c55e':'#f43f5e'}}>${t.pass?'PASS':`FAIL (${t.g} vs ${t.e})`}</div>
+              </div>
+            `)}
+          </div>
+        </div>
+      `}
+
+      ${view==='edit' && html`
+        <div class="card">
+          <div style=${{fontWeight:700, marginBottom:'8px'}}>Dati prenotazione</div>
+          <div class="grid grid2">
+            ${Field({label:'Ospite', value:current.guestName, onChange:(v)=> setCurrent({...current, guestName:v}), placeholder:'Nome e cognome'})}
+            ${Field({label:'Telefono', value:current.phone, onChange:(v)=> setCurrent({...current, phone:v}), placeholder:'WhatsApp'})}
+          </div>
+          <div class="row">
+            <div class="subtitle">Fonte</div>
+            <div style=${{display:'flex', gap:'8px'}}>
+              ${['Direct','Booking','Airbnb'].map(s => html`
+                <span key=${s} class=${'pill '+(current.source===s?'sel':'')} onClick=${()=> setCurrent({...current, source:s})}>${s}</span>
+              `)}
+            </div>
+          </div>
+          <div class="row"><div>Periodo speciale (agosto/festivi)?</div>${Toggle({value:current.specialPeriod, onChange:(v)=> setCurrent({...current, specialPeriod:v})})}</div>
+          <div class="row"><div>Day Use (4 ore)?</div>${Toggle({value:current.dayUse, onChange:(v)=> setCurrent({...current, dayUse:v})})}</div>
+          <div class="grid grid3">
+            ${Field({label:'Check-in (YYYY-MM-DD HH:mm)', value:current.checkIn, onChange:(v)=> setCurrent({...current, checkIn:v}), placeholder:'2025-08-15 15:00'})}
+            ${!current.dayUse && Field({label:'Check-out (YYYY-MM-DD HH:mm)', value:current.checkOut, onChange:(v)=> setCurrent({...current, checkOut:v}), placeholder:'2025-08-17 10:00'})}
+            ${!current.dayUse && Field({label:'Notti', value:String(current.nights), onChange:(v)=> setCurrent({...current, nights:parseInt(v||1,10)}), placeholder:'1'})}
+          </div>
+          <div class="row"><div>Prezzo stimato</div><div style=${{fontWeight:800}}>€ ${computePrice(current)}</div></div>
+
+          <div class="card" style=${{marginTop:'12px'}}>
+            <div style=${{fontWeight:700, marginBottom:'6px'}}>Checklist — Prenotazione</div>
+            ${current.source==='Direct' && html`
+              <div>
+                <div class="row"><div>Richiesta acconto</div>${Toggle({value:current.deposit.required, onChange:(v)=> setCurrent({...current, deposit:{...current.deposit, required:v}})})}</div>
+                <div class="row"><div>Importo acconto (€)</div>${Field({label:'', value:String(current.deposit.amount||0), onChange:(v)=> setCurrent({...current, deposit:{...current.deposit, amount:parseInt(v||0,10)}}), placeholder:'0'})}</div>
+                ${suggestedDeposit(current.nights).bossRequired && html`<div class="row"><div>Approvazione Boss</div>${Toggle({value:current.deposit.bossApproved, onChange:(v)=> setCurrent({...current, deposit:{...current.deposit, bossApproved:v}})})}</div>`}
+                <div class="row"><div>Contabile acconto ricevuta</div>${Toggle({value:current.deposit.received, onChange:(v)=> setCurrent({...current, deposit:{...current.deposit, received:v}})})}</div>
+                <div class="row"><div>Chiusura data su Booking (Pulse)</div>${Toggle({value:current.bookingPulseClosed, onChange:(v)=> setCurrent({...current, bookingPulseClosed:v})})}</div>
+              </div>
+            `}
+            <div class="row"><div>Documenti richiesti</div>${Toggle({value:current.tasks.askDocs, onChange:(v)=> setCurrent({...current, tasks:{...current.tasks, askDocs:v}})})}</div>
+            <div class="row"><div>Informare che scriveremo 24h prima</div>${Toggle({value:current.tasks.tell24hMsg, onChange:(v)=> setCurrent({...current, tasks:{...current.tasks, tell24hMsg:v}})})}</div>
+            <div class="row"><div>Comunicata prenot. al titolare / carta ID al gruppo</div>${Toggle({value:current.tasks.sendDocsToGroup, onChange:(v)=> setCurrent({...current, tasks:{...current.tasks, sendDocsToGroup:v}})})}</div>
+            <div class="row"><div>Aggiornato calendario</div>${Toggle({value:current.calendarUpdated, onChange:(v)=> setCurrent({...current, calendarUpdated:v})})}</div>
+            <div class="row"><div>Salvato contatto e nome combacia</div>${Toggle({value:current.tasks.nameMatchesCalendar, onChange:(v)=> setCurrent({...current, tasks:{...current.tasks, nameMatchesCalendar:v}})})}</div>
+          </div>
+
+          <div class="card">
+            <div style=${{fontWeight:700, marginBottom:'6px'}}>Checklist — Giorno prima</div>
+            <div class="row"><div>Chiedere orario di check-in</div>${Toggle({value:current.tasks.askCheckInTime, onChange:(v)=> setCurrent({...current, tasks:{...current.tasks, askCheckInTime:v}})})}</div>
+            <div class="row"><div>Inviare info accesso e uso</div>${Toggle({value:current.tasks.sendAccessInfo, onChange:(v)=> setCurrent({...current, tasks:{...current.tasks, sendAccessInfo:v}})})}</div>
+            <div class="row"><div>Ribadire disponibilità</div>${Toggle({value:current.tasks.beAvailableMsg, onChange:(v)=> setCurrent({...current, tasks:{...current.tasks, beAvailableMsg:v}})})}</div>
+            <div class="row"><div>Accensione clima automatica (2h prima)</div>${Toggle({value:current.hvacAuto, onChange:(v)=> setCurrent({...current, hvacAuto:v, hvacWhen: estimateHVAC(current.checkIn)})})}</div>
+            ${current.hvacAuto && html`<div class="tests">Impostare per: ${current.hvacWhen||'—'}</div>`}
+            <div class="row"><div>Confronto saldo col titolare</div>${Toggle({value:current.tasks.checkBalanceWithOwner, onChange:(v)=> setCurrent({...current, tasks:{...current.tasks, checkBalanceWithOwner:v}})})}</div>
+          </div>
+
+          <div class="card">
+            <div style=${{fontWeight:700, marginBottom:'6px'}}>Pagamenti</div>
+            <div class="row">
+              <div class="subtitle">Metodo saldo</div>
+              <div style=${{display:'flex',gap:'8px'}}>
+                ${['Cash','Bonifico','Carta (Nexi)','PayPal'].map(m => html`
+                  <span key=${m} class=${'pill '+(current.balance.method===m?'sel':'')} onClick=${()=> setCurrent({...current, balance:{...current.balance, method:m}})}>${m}</span>
+                `)}
+              </div>
+            </div>
+            ${current.balance.method==='Bonifico' && html`
+              <div class="tests" style=${{marginTop:'6px'}}>
+                <div>IBAN: IT20B0701241490000000023364</div>
+                <div>Intestatario: Greta Labianca</div>
+                <div>Causale: "Saldo Pernotto in Suite17 in data DD/MM"</div>
+              </div>`}
+            ${current.balance.method==='PayPal' && html`
+              <div class="tests" style=${{marginTop:'6px'}}>
+                <div>Richiedi email/telefono per invio richiesta pagamento</div>
+                <div>Causale: "Saldo Pernotto in Suite17 in data DD/MM"</div>
+              </div>`}
+            ${current.balance.method==='Carta (Nexi)' && html`<div class="tests" style=${{marginTop:'6px'}}>Genera link Nexi a nome dell'ospite e verifica su app Nexi</div>`}
+            ${Field({label:'Note pagamenti', value:current.paymentNotes, onChange:(v)=> setCurrent({...current, paymentNotes:v}), placeholder:'Es. acconto in contanti, saldo alla cassetta...'})}
+          </div>
+
+          <div class="card">
+            <div style=${{fontWeight:700, marginBottom:'6px'}}>Note</div>
+            <textarea rows="4" value=${current.notes} onInput=${(e)=> setCurrent({...current, notes:e.target.value})} placeholder="Annotazioni interne"></textarea>
+          </div>
+
+          <div class="row" style=${{justifyContent:'flex-end'}}>
+            <button class="btn err" onClick=${()=> setView('list')}>Annulla</button>
+            <button class="btn" onClick=${saveCurrent}>Salva prenotazione</button>
+          </div>
+        </div>
+      `}
+
+      ${view==='detail' && html`
+        <div>
+          <div class="card">
+            <div class="row">
+              <div style=${{fontSize:'18px',fontWeight:800}}>${current.guestName}</div>
+              <button class="btn" onClick=${()=> setView('edit')}>Modifica</button>
+            </div>
+            <div class="subtitle">${current.source} • Check-in ${current.checkIn||'—'} • Notti ${current.nights}</div>
+            <div style=${{marginTop:'6px',fontWeight:800}}>Totale € ${computePrice(current)}</div>
+            ${current.dayUse && html`<div class="tests">Day Use (4 ore)</div>`}
+            ${current.specialPeriod && html`<div class="tests">Periodo speciale</div>`}
+          </div>
+
+          <div class="card">
+            <div style=${{fontWeight:700, marginBottom:'6px'}}>Stato checklist</div>
+            ${Object.entries(current.tasks).map(([k,v])=> html`
+              <div class="row" key=${k}><div>${k}</div>${Toggle({value:v, onChange:(val)=> setCurrent({...current, tasks:{...current.tasks, [k]:val}})})}</div>
+            `)}
+            <div class="row"><div>Calendario aggiornato</div>${Toggle({value:current.calendarUpdated, onChange:(val)=> setCurrent({...current, calendarUpdated:val})})}</div>
+            ${current.source==='Direct' && html`<div class="row"><div>Chiusura su Pulse eseguita</div>${Toggle({value:current.bookingPulseClosed, onChange:(val)=> setCurrent({...current, bookingPulseClosed:val})})}</div>`}
+          </div>
+
+          <div class="row" style=${{justifyContent:'flex-end'}}>
+            <button class="btn" onClick=${()=> setView('list')}>Indietro</button>
+            <button class="btn warn" onClick=${()=> {
+              const clone = {...current, id: uuidv4(), guestName: current.guestName + ' (copy)'};
+              setBookings(prev=> [clone, ...prev]);
+              alert('Prenotazione duplicata.');
+            }}>Duplica</button>
+          </div>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+render(h(App, {}), document.getElementById('root'));
+</script>
+</body>
+</html>
