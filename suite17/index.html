@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Suite17</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Suite17">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0f172a">
+  <style>
+    :root{
+      --bg:#0f172a; --card:#111827; --line:#1f2937; --ink:#f8fafc; --dim:#cbd5e1;
+      --pri:#06b6d4; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444;
+    }
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    .wrap{max-width:980px;margin:0 auto;padding:16px}
+    .header{border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between}
+    .title{font-weight:800;font-size:22px}
+    .subtitle{color:var(--dim)}
+    .btn{background:var(--pri);color:white;border:0;border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer}
+    .btn.warn{background:var(--warn)} .btn.err{background:var(--err)} .btn:disabled{opacity:.6;cursor:not-allowed}
+    .row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px;margin-bottom:12px}
+    input,textarea{width:100%;background:#0b1220;border:1px solid var(--line);border-radius:12px;padding:10px;color:var(--ink)}
+    .toggle{width:48px;height:30px;border-radius:16px;display:flex;align-items:center;padding:4px;background:#334155;cursor:pointer}
+    .toggle.on{background:var(--ok)} .dot{width:22px;height:22px;border-radius:11px;background:#fff;transform:translateX(0);transition:.15s} .toggle.on .dot{transform:translateX(18px)}
+    .pill{padding:8px;border-radius:10px;background:#334155;color:#d1d5db;cursor:pointer} .pill.sel{background:var(--pri);color:#fff}
+    .grid{display:grid;grid-template-columns:1fr;gap:12px} @media(min-width:760px){.grid3{grid-template-columns:repeat(3,1fr)} .grid2{grid-template-columns:repeat(2,1fr)}}
+    .tests{font-size:12px;color:var(--dim)}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div>
+      <div class="title">Suite17</div>
+      <div class="subtitle">Gestisci prenotazioni e checklist</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn" id="newBtn">Nuova prenotazione</button>
+      <button class="btn warn" id="exportBtn">Esporta JSON</button>
+    </div>
+  </div>
+  <div id="view"></div>
+</div>
+
+<script>
+// --- Pure JS helpers (no frameworks)
+const DAY_USE_PRICE = 120;
+function uuidv4(){
+  try{
+    if (window.crypto && crypto.getRandomValues){
+      const b = new Uint8Array(16); crypto.getRandomValues(b);
+      b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+      const h = Array.from(b, x=>x.toString(16).padStart(2,'0')).join('');
+      return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+    }
+  }catch(e){};
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c=>{
+    const r=Math.random()*16|0, v=c==='x'?r:(r&0x3|0x8); return v.toString(16);
+  });
+}
+function computePrice(state){
+  if (state.dayUse) return DAY_USE_PRICE;
+  const first = state.specialPeriod ? 170 : 150;
+  const add   = state.specialPeriod ? 85  : 75;
+  const n = Math.max(1, parseInt(state.nights||1,10));
+  return first + add*(n-1);
+}
+function suggestedDeposit(nights){
+  const n = Math.max(1, parseInt(nights||1,10));
+  if (n===1) return {amount:100, perNight:[100], bossRequired:false};
+  if (n===2) return {amount:100, perNight:[50,50], bossRequired:false};
+  return {amount:0, perNight:[], bossRequired:true};
+}
+function estimateHVAC(checkIn){
+  if(!checkIn) return '';
+  try{
+    const [d,t] = checkIn.split(' ');
+    const [Y,M,D] = d.split('-').map(Number);
+    const [h,m] = t.split(':').map(Number);
+    const dt = new Date(Y,(M-1),D,h,m||0);
+    dt.setHours(dt.getHours()-2);
+    const pad=x=>String(x).padStart(2,'0');
+    return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+  }catch(e){return ''}
+}
+function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstElementChild; }
+function mount(node){ const root=document.getElementById('view'); root.innerHTML=''; root.appendChild(node); }
+function field(label, value, onInput, placeholder='', type='text'){
+  const w = el(`<div><div class="tests" style="margin-bottom:4px">${label}</div><input placeholder="${placeholder}"></div>`);
+  const inp = w.querySelector('input'); inp.value = value ?? ''; inp.type = type;
+  inp.addEventListener('input', e=> onInput(e.target.value)); return w;
+}
+function toggle(label, value, onChange){
+  const w = el(`<div class="row"><div>${label}</div><div class="toggle${value?' on':''}"><div class="dot"></div></div></div>`);
+  const t = w.querySelector('.toggle'); t.addEventListener('click', ()=>{ value=!value; t.classList.toggle('on'); onChange(value); });
+  return w;
+}
+function pills(options, current, onPick){
+  const wrap = el('<div style="display:flex;gap:8px"></div>');
+  options.forEach(s=>{
+    const p = el(`<span class="pill ${current===s?'sel':''}">${s}</span>`);
+    p.addEventListener('click', ()=> onPick(s)); wrap.appendChild(p);
+  });
+  return wrap;
+}
+
+// --- App state
+let bookings = [];
+let current  = emptyBooking();
+let view = 'list';
+function emptyBooking(){
+  return { id:uuidv4(), guestName:'', phone:'', source:'Direct', specialPeriod:false, dayUse:false,
+    checkIn:'', checkOut:'', nights:1, docsReceived:false, calendarUpdated:false, ownerNotified:false, bookingPulseClosed:false,
+    deposit:{ required:false, method:'Cash', amount:0, received:false, bossApproved:false },
+    balance:{ method:'Cash', dueAtCheckIn:true, received:false },
+    paymentNotes:'', hvacAuto:false, hvacWhen:'',
+    tasks:{ askDocs:false,tell24hMsg:false,sendDocsToGroup:false,saveContact:false,nameMatchesCalendar:false,askCheckInTime:false,sendAccessInfo:false,beAvailableMsg:false,checkBalanceWithOwner:false },
+    price:0, notes:'' };
+}
+
+// --- Views
+function renderList(){
+  const wrap = el('<div></div>');
+  if(!bookings.length) wrap.appendChild(el('<div class="card subtitle" style="text-align:center">Nessuna prenotazione. Crea la prima con "Nuova prenotazione".</div>'));
+  bookings.forEach(item=>{
+    const c = el(`<div class="card">
+      <div class="row">
+        <div>
+          <div style="font-weight:700">${item.guestName} • ${item.source}</div>
+          <div class="subtitle" style="font-size:12px">${(item.checkIn||'').slice(0,16)} → ${(item.checkOut||'').slice(0,16)||'—'}</div>
+          <div class="subtitle" style="font-size:12px">€ ${item.price} ${item.dayUse?'(Day Use)':''} ${item.specialPeriod?'• Speciale':''}</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn" data-k="open">Apri</button>
+          <button class="btn err" data-k="del">Elimina</button>
+        </div>
+      </div>
+    </div>`);
+    c.querySelector('[data-k="open"]').addEventListener('click', ()=>{ current = {...item}; view='detail'; mount(renderDetail()); });
+    c.querySelector('[data-k="del"]').addEventListener('click', ()=>{ bookings = bookings.filter(x=> x.id!==item.id); mount(renderList()); });
+    wrap.appendChild(c);
+  });
+  // self-tests
+  const tests = [
+    ['Prezzo 1 notte', computePrice({nights:1,dayUse:false,specialPeriod:false}), 150],
+    ['Prezzo 2 notti', computePrice({nights:2,dayUse:false,specialPeriod:false}), 225],
+    ['Prezzo 3 notti speciale', computePrice({nights:3,dayUse:false,specialPeriod:true}), 340],
+    ['Day Use', computePrice({nights:1,dayUse:true,specialPeriod:false}), 120],
+  ];
+  const tcard = el('<div class="card"><div style="font-weight:700;margin-bottom:6px">Self-tests</div></div>');
+  tests.forEach(([name,got,exp])=>{
+    const pass = String(got)===String(exp);
+    tcard.appendChild(el(`<div class="row tests"><div>${name}</div><div style="color:${pass?'#22c55e':'#f43f5e'}">${pass?'PASS':`FAIL (${got} vs ${exp})`}</div></div>`));
+  });
+  wrap.appendChild(tcard);
+  return wrap;
+}
+
+function renderEdit(){
+  const card = el('<div class="card"></div>');
+  card.appendChild(el('<div style="font-weight:700;margin-bottom:8px">Dati prenotazione</div>'));
+  const grid = el('<div class="grid grid2"></div>');
+  grid.appendChild(field('Ospite', current.guestName, v=> current.guestName=v, 'Nome e cognome'));
+  grid.appendChild(field('Telefono', current.phone, v=> current.phone=v, 'WhatsApp'));
+  card.appendChild(grid);
+
+  const rowFonte = el('<div class="row"><div class="subtitle">Fonte</div></div>');
+  rowFonte.appendChild(pills(['Direct','Booking','Airbnb'], current.source, s=>{ current.source=s; mount(renderEdit()); }));
+  card.appendChild(rowFonte);
+
+  card.appendChild(toggle('Periodo speciale (agosto/festivi)?', current.specialPeriod, v=> current.specialPeriod=v));
+  card.appendChild(toggle('Day Use (4 ore)?', current.dayUse, v=> current.dayUse=v));
+
+  const g3 = el('<div class="grid grid3"></div>');
+  g3.appendChild(field('Check-in (YYYY-MM-DD HH:mm)', current.checkIn, v=> current.checkIn=v, '2025-08-15 15:00'));
+  if(!current.dayUse) g3.appendChild(field('Check-out (YYYY-MM-DD HH:mm)', current.checkOut, v=> current.checkOut=v, '2025-08-17 10:00'));
+  if(!current.dayUse) g3.appendChild(field('Notti', String(current.nights), v=> current.nights=parseInt(v||1,10), '1', 'number'));
+  card.appendChild(g3);
+
+  const priceRow = el(`<div class="row"><div>Prezzo stimato</div><div style="font-weight:800">€ ${computePrice(current)}</div></div>`);
+  card.appendChild(priceRow);
+
+  // Prenotazione checklist
+  const chk = el('<div class="card" style="margin-top:12px"><div style="font-weight:700;margin-bottom:6px">Checklist — Prenotazione</div></div>');
+  if(current.source==='Direct'){
+    chk.appendChild(toggle('Richiesta acconto', current.deposit.required, v=> current.deposit.required=v));
+    chk.appendChild(el('<div class="row"><div>Importo acconto (€)</div></div>'));
+    chk.lastElementChild.appendChild(field('', String(current.deposit.amount||0), v=> current.deposit.amount=parseInt(v||0,10), '0', 'number'));
+    if(suggestedDeposit(current.nights).bossRequired){
+      chk.appendChild(toggle('Approvazione Boss', current.deposit.bossApproved, v=> current.deposit.bossApproved=v));
+    }
+    chk.appendChild(toggle('Contabile acconto ricevuta', current.deposit.received, v=> current.deposit.received=v));
+    chk.appendChild(toggle('Chiusura data su Booking (Pulse)', current.bookingPulseClosed, v=> current.bookingPulseClosed=v));
+  }
+  chk.appendChild(toggle('Documenti richiesti', current.tasks.askDocs, v=> current.tasks.askDocs=v));
+  chk.appendChild(toggle('Informare che scriveremo 24h prima', current.tasks.tell24hMsg, v=> current.tasks.tell24hMsg=v));
+  chk.appendChild(toggle('Comunicata prenot. al titolare / carta ID al gruppo', current.tasks.sendDocsToGroup, v=> current.tasks.sendDocsToGroup=v));
+  chk.appendChild(toggle('Aggiornato calendario', current.calendarUpdated, v=> current.calendarUpdated=v));
+  chk.appendChild(toggle('Salvato contatto e nome combacia', current.tasks.nameMatchesCalendar, v=> current.tasks.nameMatchesCalendar=v));
+  card.appendChild(chk);
+
+  // Giorno prima
+  const day = el('<div class="card"><div style="font-weight:700;margin-bottom:6px">Checklist — Giorno prima</div></div>');
+  day.appendChild(toggle('Chiedere orario di check-in', current.tasks.askCheckInTime, v=> current.tasks.askCheckInTime=v));
+  day.appendChild(toggle('Inviare info accesso e uso', current.tasks.sendAccessInfo, v=> current.tasks.sendAccessInfo=v));
+  day.appendChild(toggle('Ribadire disponibilità', current.tasks.beAvailableMsg, v=> current.tasks.beAvailableMsg=v));
+  day.appendChild(toggle('Accensione clima automatica (2h prima)', current.hvacAuto, v=> { current.hvacAuto=v; current.hvacWhen = estimateHVAC(current.checkIn); }));
+  if(current.hvacAuto) day.appendChild(el(`<div class="tests">Impostare per: ${current.hvacWhen||'—'}</div>`));
+  day.appendChild(toggle('Confronto saldo col titolare', current.tasks.checkBalanceWithOwner, v=> current.tasks.checkBalanceWithOwner=v));
+  card.appendChild(day);
+
+  // Pagamenti
+  const pay = el('<div class="card"><div style="font-weight:700;margin-bottom:6px">Pagamenti</div></div>');
+  const methods = el('<div class="row"><div class="subtitle">Metodo saldo</div></div>');
+  methods.appendChild(pills(['Cash','Bonifico','Carta (Nexi)','PayPal'], current.balance.method, m=>{ current.balance.method=m; mount(renderEdit()); }));
+  pay.appendChild(methods);
+  if(current.balance.method==='Bonifico'){
+    pay.appendChild(el('<div class="tests" style="margin-top:6px">IBAN: IT20B0701241490000000023364<br>Intestatario: Greta Labianca<br>Causale: "Saldo Pernotto in Suite17 in data DD/MM"</div>'));
+  }
+  if(current.balance.method==='PayPal'){
+    pay.appendChild(el('<div class="tests" style="margin-top:6px">Richiedi email/telefono per invio richiesta pagamento<br>Causale: "Saldo Pernotto in Suite17 in data DD/MM"</div>'));
+  }
+  if(current.balance.method==='Carta (Nexi)'){
+    pay.appendChild(el('<div class="tests" style="margin-top:6px">Genera link Nexi a nome dell'ospite e verifica su app Nexi</div>'));
+  }
+  const noteWrap = el('<div></div>');
+  const noteLabel = el('<div class="tests" style="margin:8px 0 4px">Note pagamenti</div>');
+  const noteArea = el('<textarea rows="4" placeholder="Es. acconto in contanti, saldo alla cassetta..."></textarea>');
+  noteArea.value = current.paymentNotes||'';
+  noteArea.addEventListener('input', e=> current.paymentNotes = e.target.value);
+  noteWrap.appendChild(noteLabel); noteWrap.appendChild(noteArea);
+  pay.appendChild(noteWrap);
+  card.appendChild(pay);
+
+  // Note
+  const nt = el('<div class="card"><div style="font-weight:700;margin-bottom:6px">Note</div></div>');
+  const ta = el('<textarea rows="4" placeholder="Annotazioni interne"></textarea>');
+  ta.value = current.notes||''; ta.addEventListener('input', e=> current.notes=e.target.value);
+  nt.appendChild(ta); card.appendChild(nt);
+
+  // Footer actions
+  const actions = el('<div class="row" style="justify-content:flex-end"></div>');
+  const cancel = el('<button class="btn err">Annulla</button>'); cancel.addEventListener('click', ()=>{ view='list'; mount(renderList()); });
+  const save = el('<button class="btn">Salva prenotazione</button>'); save.addEventListener('click', ()=>{
+    if(!current.guestName || !current.checkIn){ alert('Nome ospite e Check-in sono obbligatori.'); return; }
+    if(current.source==='Direct' && current.deposit.required){
+      const s = suggestedDeposit(current.nights);
+      if(s.bossRequired && !current.deposit.bossApproved){ alert('Prenotazioni dirette >2 notti: serve approvazione Boss per acconto.'); return; }
+    }
+    current.price = computePrice(current); bookings = [ {...current}, ...bookings ]; view='list'; mount(renderList());
+  });
+  actions.appendChild(cancel); actions.appendChild(save); card.appendChild(actions);
+
+  return card;
+}
+
+function renderDetail(){
+  const wrap = el('<div></div>');
+  const top = el(`<div class="card">
+    <div class="row">
+      <div style="font-size:18px;font-weight:800">${current.guestName}</div>
+      <button class="btn">Modifica</button>
+    </div>
+    <div class="subtitle">${current.source} • Check-in ${current.checkIn||'—'} • Notti ${current.nights}</div>
+    <div style="margin-top:6px;font-weight:800">Totale € ${computePrice(current)}</div>
+    ${current.dayUse?'<div class="tests">Day Use (4 ore)</div>':''}
+    ${current.specialPeriod?'<div class="tests">Periodo speciale</div>':''}
+  </div>`);
+  top.querySelector('.btn').addEventListener('click', ()=>{ view='edit'; mount(renderEdit()); });
+  wrap.appendChild(top);
+
+  const chk = el('<div class="card"><div style="font-weight:700;margin-bottom:6px">Stato checklist</div></div>');
+  Object.entries(current.tasks).forEach(([k,v])=> chk.appendChild(toggle(k, v, val=> current.tasks[k]=val)));
+  chk.appendChild(toggle('Calendario aggiornato', current.calendarUpdated, v=> current.calendarUpdated=v));
+  if(current.source==='Direct') chk.appendChild(toggle('Chiusura su Pulse eseguita', current.bookingPulseClosed, v=> current.bookingPulseClosed=v));
+  wrap.appendChild(chk);
+
+  const actions = el('<div class="row" style="justify-content:flex-end"></div>');
+  const back = el('<button class="btn">Indietro</button>'); back.addEventListener('click', ()=>{ view='list'; mount(renderList()); });
+  const dup  = el('<button class="btn warn">Duplica</button>'); dup.addEventListener('click', ()=>{
+    const clone = {...current, id: uuidv4(), guestName: current.guestName + ' (copy)'}; bookings = [clone, ...bookings]; alert('Prenotazione duplicata.');
+  });
+  actions.appendChild(back); actions.appendChild(dup); wrap.appendChild(actions);
+  return wrap;
+}
+
+// Header buttons
+document.getElementById('newBtn').addEventListener('click', ()=>{ current = emptyBooking(); view='edit'; mount(renderEdit()); });
+document.getElementById('exportBtn').addEventListener('click', ()=>{
+  const blob = JSON.stringify(bookings, null, 2);
+  alert(blob.length ? blob.slice(0, 1000) + (blob.length>1000?'\n... (troncato)':'') : 'Nessun dato');
+});
+
+// Boot
+mount(renderList());
+</script>
+</body>
+</html>
